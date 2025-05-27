@@ -39,22 +39,28 @@ SHEET_NAME = "Geral"
 # ░░░ Autenticação ░░░───────────────────────────────────────────────────────────
 
 def _authorize_google_sheets():
+    import json
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from streamlit.runtime.secrets import secrets
+
     creds: Credentials | None = None
-    if os.path.exists("token.json"):
-        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+    token_path = "token.json"
+
+    # Tenta usar token salvo (apenas localmente, opcional para Streamlit Cloud)
+    if os.path.exists(token_path):
+        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
 
     if not creds or not creds.valid:
-        from google_auth_oauthlib.flow import InstalledAppFlow
-
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                "client_secret.json", SCOPES
-            )
+            # Carrega as credenciais diretamente do st.secrets
+            client_config = json.loads(secrets["GOOGLE_CLIENT_SECRET"])
+            flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
             creds = flow.run_local_server(port=0)
 
-        with open("token.json", "w", encoding="utf-8") as fp:
+        # Salva localmente (útil em ambiente de desenvolvimento)
+        with open(token_path, "w", encoding="utf-8") as fp:
             fp.write(creds.to_json())
 
     return creds
