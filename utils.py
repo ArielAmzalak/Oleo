@@ -25,6 +25,9 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.auth.transport.requests import Request
+import json
+from google_auth_oauthlib.flow import InstalledAppFlow
+from streamlit.runtime.secrets import secrets
 
 from math import ceil
 from barcode import Code128
@@ -39,10 +42,6 @@ SHEET_NAME = "Geral"
 # ░░░ Autenticação ░░░───────────────────────────────────────────────────────────
 
 def _authorize_google_sheets():
-    import json
-    from google_auth_oauthlib.flow import InstalledAppFlow
-    from streamlit.runtime.secrets import secrets
-
     creds: Credentials | None = None
     token_path = "token.json"
 
