@@ -32,15 +32,17 @@ if st.button("✅ Enviar & Gerar PDF"):
     if not responses.get("n.º da Amostra"):
         st.error("⚠️ Por favor, preencha o campo *n.º da Amostra* – ele é obrigatório.")
     else:
-        try:
-            save_to_sheets(responses)
-            st.success("📊 Dados gravados no Google Sheets com sucesso!")
-        except Exception as exc:
-            st.error(str(exc))
-            st.stop()
+        with st.spinner("Salvando dados..."):
+            try:
+                save_to_sheets(responses)
+                st.success("📊 Dados gravados no Google Sheets com sucesso!")
+            except Exception as exc:
+                st.error(str(exc))
+                st.stop()
 
-        st.session_state["pdf_bytes"] = generate_pdf(responses)
-        st.info("PDF gerado – utilize o botão abaixo para baixar.")
+        with st.spinner("Gerando PDF..."):
+            st.session_state["pdf_bytes"] = generate_pdf(responses)
+        st.info("✅ PDF gerado – utilize o botão abaixo para baixar.")
 
 # ░░░ Botão de download do PDF ░░░───────────────────────────────────────────────
 if st.session_state["pdf_bytes"]:
