@@ -25,13 +25,13 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.auth.transport.requests import Request
-import json
-from google_auth_oauthlib.flow import InstalledAppFlow
-from streamlit.runtime.secrets import secrets
 
 from math import ceil
 from barcode import Code128
 from barcode.writer import ImageWriter
+
+import streamlit as st
+import json
 
 # ░░░ Config Google Sheets ░░░───────────────────────────────────────────────────
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -41,11 +41,14 @@ SHEET_NAME = "Geral"
 
 # ░░░ Autenticação ░░░───────────────────────────────────────────────────────────
 
-def _authorize_google_sheets():
-    creds: Credentials | None = None
-    token_path = "token.json"
+@st.cache_resource
+def _authorize_google_sheets() -> Credentials:
+    from google_auth_oauthlib.flow import InstalledAppFlow
 
-    # Tenta usar token salvo (apenas localmente, opcional para Streamlit Cloud)
+    token_path = "token.json"
+    creds = None
+
+    # Em ambiente local, tenta reutilizar token salvo
     if os.path.exists(token_path):
         creds = Credentials.from_authorized_user_file(token_path, SCOPES)
 
@@ -53,22 +56,29 @@ def _authorize_google_sheets():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            # Carrega as credenciais diretamente do st.secrets
-            client_config = json.loads(secrets["GOOGLE_CLIENT_SECRET"])
+            # Em produção (ex: Streamlit Cloud), usa client_config do secrets
+            try:
+                client_config = json.loads(st.secrets["GOOGLE_CLIENT_SECRET"])
+            except Exception:
+                st.error("❌ Não foi possível carregar as credenciais do Google.")
+                st.stop()
             flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
             creds = flow.run_local_server(port=0)
 
-        # Salva localmente (útil em ambiente de desenvolvimento)
-        with open(token_path, "w", encoding="utf-8") as fp:
-            fp.write(creds.to_json())
+        # Salva token localmente apenas se possível
+        try:
+            with open(token_path, "w", encoding="utf-8") as fp:
+                fp.write(creds.to_json())
+        except Exception:
+            pass  # Ignora falha de escrita no Streamlit Cloud
 
     return creds
 
 
+@st.cache_resource
 def _get_sheets_service():
-    return build(
-        "sheets", "v4", credentials=_authorize_google_sheets(), cache_discovery=False
-    )
+    return build("sheets", "v4", credentials=_authorize_google_sheets(), cache_discovery=False)
+
 
 
 # ░░░ Estrutura do formulário ░░░────────────────────────────────────────────────
@@ -212,13 +222,10 @@ def build_form_and_get_responses() -> Dict[str, Any]:
 # ░░░ Google Sheets ░░░──────────────────────────────────────────────────────────
 
 def save_to_sheets(responses: Dict[str, Any]) -> None:
-    """Acrescenta linha na planilha na ordem correta."""
-    row: List[str] = []
+    row = []
     for col in SHEET_COLUMNS:
         val = responses.get(col, "")
-        if isinstance(val, bool):
-            val = "Sim" if val else "Não"
-        row.append(str(val))
+        row.append("Sim" if val is True else "Não" if val is False else str(val))
 
     body = {"values": [row]}
     try:
@@ -231,7 +238,9 @@ def save_to_sheets(responses: Dict[str, Any]) -> None:
             body=body,
         ).execute()
     except HttpError as exc:
-        raise RuntimeError(f"Erro ao gravar no Google Sheets → {exc}") from exc
+        st.error("❌ Erro ao gravar no Google Sheets.")
+        raise RuntimeError(f"Erro ao gravar → {exc}") from exc
+
 
 
 # ░░░ Sanitização de texto ░░░───────────────────────────────────────────────────
