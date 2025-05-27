@@ -63,7 +63,7 @@ def _authorize_google_sheets() -> Credentials:
                 st.error("❌ Não foi possível carregar as credenciais do Google.")
                 st.stop()
             flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
-            creds = flow.run_local_server(port=0)
+            creds = flow.run_console()
 
         # Salva token localmente apenas se possível
         try:
