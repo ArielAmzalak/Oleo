@@ -203,7 +203,7 @@ def build_form_and_get_responses() -> Dict[str, Any]:
     if st is None:
         raise RuntimeError("Streamlit não instalado – UI indisponível.")
 
-    st.header("Formulário de Coleta de Óleo")
+    st.header("Formulário de Coleta de Amostras de Óleo 🛢️")
     responses: Dict[str, Any] = {}
 
     for section, questions in FORM_SECTIONS:
