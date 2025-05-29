@@ -107,7 +107,7 @@ FORM_SECTIONS: List[Tuple[str, List[Tuple[str, Any]]]] = [
             ("Houve troca de óleo após coleta?", False),
             ("Troca de Filtro após coleta", False),
             ("Houve mudança do local de operação?", False),
-            ("Fabricante", "Scania"),
+            ("Fabricante do Equipamento:", "Scania"),
             ("Modelo", "DC13"),
             ("Horímetro do Motor", ""),
         ],
@@ -115,8 +115,8 @@ FORM_SECTIONS: List[Tuple[str, List[Tuple[str, Any]]]] = [
     (
         "Óleo",
         [
-            ("Houve complemento de óleo", False),
-            ("Se sim, quantos litros", ""),
+            ("Houve complemento de óleo?", False),
+            ("Se sim, quantos litros?", ""),
             ("Amostra coletada", "Motor"),
             ("Fabricante", "Mobil"),
             ("Grau de viscosidade", "15W40"),
@@ -124,7 +124,7 @@ FORM_SECTIONS: List[Tuple[str, List[Tuple[str, Any]]]] = [
             ("Apresentou limalha no filtro ou na tela?", False),
             ("Apresentou limalhas no bujão magnético?", False),
             ("Equipamento apresentou ruído anormal?", False),
-            ("Existem vazamentos no sistema", False),
+            ("Existem vazamentos no sistema?", False),
             ("A temperatura de operação está normal?", False),
             ("O desempenho do sistema está normal?", False),
             ("Detalhes das anormalidades (caso Haja)", ""),
