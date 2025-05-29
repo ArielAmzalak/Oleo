@@ -18,7 +18,7 @@ st.set_page_config(
     page_icon="🧾",
     layout="centered",
 )
-st.title("Registro de Coleta de Óleo 🛢️")
+st.title("Oliveira Energia")
 
 # Guarda o PDF na sessão para download após o envio
 if "pdf_bytes" not in st.session_state:
