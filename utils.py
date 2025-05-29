@@ -95,7 +95,7 @@ FORM_SECTIONS: List[Tuple[str, List[Tuple[str, Any]]]] = [
             ("Local de operação:", ""),
             ("UGD:", ""),
             ("Responsável Pela Coleta:", ""),
-            ("n.º da Amostra:", ""),  # obrigatório
+            ("n.º da Amostra", ""),  # obrigatório
         ],
     ),
     (
