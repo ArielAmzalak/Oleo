@@ -5,7 +5,12 @@
 from typing import Dict
 
 import streamlit as st
-from utils import build_form_and_get_responses, save_to_sheets, generate_pdf
+from utils import (
+    build_form_and_get_responses,
+    save_to_sheets,
+    generate_pdf,
+    sync_sample_number,
+)
 
 st.set_page_config(
     page_title="Registro de Coleta de Óleo",
@@ -20,13 +25,40 @@ if "pdf_bytes" not in st.session_state:
 responses: Dict[str, object] = build_form_and_get_responses()
 
 if st.button("✅ Enviar & Gerar PDF"):
-    if not responses.get("n.º da Amostra"):
+    sample_no = str(responses.get("n.º da Amostra", "") or "").strip()
+    if not sample_no:
         st.error("⚠️ Preencha o campo *n.º da Amostra* (obrigatório).")
     else:
+        responses["n.º da Amostra"] = sample_no
+        sync_sample_number(sample_no)
+
+        last_loaded = st.session_state.get("sample_last_loaded_number", "") or ""
+        existing_row = st.session_state.get("sample_row_index")
+        existing_extras = dict(st.session_state.get("sample_existing_extras", {}))
+        if sample_no != last_loaded:
+            existing_row = None
+            existing_extras = {}
+            st.session_state["sample_row_index"] = None
+            st.session_state["sample_existing_extras"] = {}
+
         with st.spinner("Salvando no Google Sheets..."):
             try:
-                save_to_sheets(responses)
-                st.success("📊 Dados gravados (A..AG) e O.S. atualizado em AH.")
+                row_idx = save_to_sheets(
+                    responses,
+                    existing_row=existing_row,
+                    existing_extras=existing_extras,
+                )
+                st.session_state["sample_row_index"] = row_idx
+                st.session_state["sample_last_loaded_number"] = sample_no
+                st.session_state["sample_existing_extras"] = existing_extras
+                st.session_state["sample_lookup_status"] = "loaded"
+                st.session_state["sample_lookup_message"] = (
+                    f"Amostra {sample_no} sincronizada na linha {row_idx}."
+                )
+                if existing_row is not None:
+                    st.success(f"♻️ Registro atualizado na linha {row_idx} (A..AH).")
+                else:
+                    st.success(f"📊 Dados gravados na linha {row_idx} (A..AH).")
             except Exception as exc:
                 st.error(str(exc))
                 st.stop()
