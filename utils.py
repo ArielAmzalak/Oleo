@@ -1,5 +1,6 @@
+
 # ────────────────────────────────────────────────────────────────────────────────
-# utils.py – funções auxiliares (Google Sheets, PDF e UI Streamlit)
+# utils.py — funções auxiliares (Google Sheets, PDF e UI Streamlit)
 # ────────────────────────────────────────────────────────────────────────────────
 from __future__ import annotations
 
@@ -13,11 +14,10 @@ from typing import Dict, List, Tuple, Any
 
 import qrcode
 from fpdf import FPDF
-from fpdf.errors import FPDFException
-from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 
 from barcode import Code128
 from barcode.writer import ImageWriter
@@ -29,18 +29,96 @@ except ModuleNotFoundError:
 
 # ░░░ Config Google Sheets ░░░
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-SPREADSHEET_ID = "1VLDQUCO3Aw4ClAvhjkUsnBxG44BTjz-MjHK04OqPxYM"
+# Tenta pegar o ID da planilha dos secrets; se não houver, usa a constante abaixo.
+SPREADSHEET_ID = (
+    (st.secrets.get("SPREADSHEET_ID") if st else None)
+    or os.getenv("SPREADSHEET_ID")
+    or "YOUR_SPREADSHEET_ID_HERE"
+)
 SHEET_NAME = "Geral"
-OS_LABEL = "Ordem de Serviço (O.S.):"  # <- rótulo padrão do novo campo
-OS_TARGET_COL = "AH"                   # <- coluna de destino no Google Sheets
 
-# ░░░ Autenticação ░░░
-@st.cache_resource
+# ░░░ Rótulo e coluna de destino do novo campo O.S. ░░░
+OS_FORM_LABEL = "Ordem de Serviço (O.S.)"
+OS_TARGET_COL = "AH"  # coluna onde gravaremos a O.S. após o append A..AG
+
+# ░░░ Cabeçalhos EXATOS da planilha (A..AG), sem a coluna OS (AH) ░░░
+SHEET_HEADERS_EXCL_OS: List[str] = [
+    "Estado de Origem",
+    "Cliente",
+    "Data da coleta",
+    "Local de operação",
+    "UGD",
+    "Responsável Pela Coleta",
+    "n.º da Amostra",
+    "n.º de série Equipamento",
+    "Frota",
+    "Horímetro do Óleo",
+    "Houve troca de óleo após coleta?",
+    "Troca de Filtro após coleta",
+    "Houve mudança do local de operação?",
+    "Fabricante",
+    "Modelo",
+    "Horímetro do Motor",
+    "Houve complemento de óleo",
+    "Se sim, quantos litros",
+    "Amostra coletada",
+    "Fabricante do Óleo",
+    "Grau de viscosidade",
+    "Nome",
+    "Apresentou limalha no filtro ou na tela?",
+    "Apresentou limalhas no bujão magnético?",
+    "Equipamento apresentou ruído anormal?",
+    "Existem vazamentos no sistema",
+    "A temperatura de operação está normal?",
+    "O desempenho do sistema está normal?",
+    "Detalhes das anormalidades (caso Haja)",
+    "Pessoa de contato",
+    "Telefone",
+    "Status",        # AF — vazio nesta etapa
+    "Data Status"    # AG — vazio nesta etapa
+]
+
+# ░░░ Mapeia cada cabeçalho -> label do formulário (quando diferir) ░░░
+SHEET_HEADER_TO_FORM: Dict[str, str] = {
+    "Estado de Origem": "Estado de Origem",
+    "Cliente": "Cliente",
+    "Data da coleta": "Data da coleta",
+    "Local de operação": "Local de operação:",
+    "UGD": "UGD:",
+    "Responsável Pela Coleta": "Responsável Pela Coleta:",
+    "n.º da Amostra": "n.º da Amostra",
+    "n.º de série Equipamento": "n.º de série:",
+    "Frota": "Frota:",
+    "Horímetro do Óleo": "Horímetro do Óleo:",
+    "Houve troca de óleo após coleta?": "Houve troca de óleo após coleta?",
+    "Troca de Filtro após coleta": "Trocado o filtro após coleta?",
+    "Houve mudança do local de operação?": "Houve mudança do local de operação?",
+    "Fabricante": "Fabricante do Equipamento:",
+    "Modelo": "Modelo:",
+    "Horímetro do Motor": "Horímetro do Motor",
+    "Houve complemento de óleo": "Houve complemento de óleo?",
+    "Se sim, quantos litros": "Se sim, quantos litros?",
+    "Amostra coletada": "Amostra coletada:",
+    "Fabricante do Óleo": "Fabricante:",  # seção Óleo
+    "Grau de viscosidade": "Grau de viscosidade:",
+    "Nome": "Nome:",
+    "Apresentou limalha no filtro ou na tela?": "Apresentou limalha no filtro ou na tela?",
+    "Apresentou limalhas no bujão magnético?": "Apresentou limalhas no bujão magnético?",
+    "Equipamento apresentou ruído anormal?": "Equipamento apresentou ruído anormal?",
+    "Existem vazamentos no sistema": "Existem vazamentos no sistema?",
+    "A temperatura de operação está normal?": "A temperatura de operação está normal?",
+    "O desempenho do sistema está normal?": "O desempenho do sistema está normal?",
+    "Detalhes das anormalidades (caso Haja)": "Detalhes das anormalidades (caso Haja):",
+    "Pessoa de contato": "Pessoa de contato:",
+    "Telefone": "Telefone:",
+    # "Status" e "Data Status" são vazios nesta etapa
+}
+
+# ░░░ Autenticação Google ░░░
 def _authorize_google_sheets() -> Credentials:
-    from google_auth_oauthlib.flow import InstalledAppFlow
+    # Preferencialmente usa token.json quando executado localmente
     token_path = "token.json"
     creds = None
-
     if os.path.exists(token_path):
         creds = Credentials.from_authorized_user_file(token_path, SCOPES)
 
@@ -48,13 +126,27 @@ def _authorize_google_sheets() -> Credentials:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
+            # Busca client secret do Streamlit Secrets ou variável de ambiente
+            client_secret_json = None
+            if st:
+                client_secret_json = st.secrets.get("GOOGLE_CLIENT_SECRET")
+            if not client_secret_json:
+                client_secret_json = os.getenv("GOOGLE_CLIENT_SECRET")
+            if not client_secret_json:
+                raise RuntimeError("Credenciais Google ausentes. Defina GOOGLE_CLIENT_SECRET nos secrets/ambiente.")
+            # Usa InstalledAppFlow apenas se você rodar localmente e quiser abrir consent
+            from google_auth_oauthlib.flow import InstalledAppFlow
             try:
-                client_config = json.loads(st.secrets["GOOGLE_CLIENT_SECRET"])
-            except Exception:
-                st.error("❌ Não foi possível carregar as credenciais do Google.")
-                st.stop()
+                client_config = json.loads(client_secret_json)
+            except Exception as exc:
+                raise RuntimeError("GOOGLE_CLIENT_SECRET inválido (JSON).") from exc
             flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
-            creds = flow.run_console()
+            # Nota: em ambientes sem navegador, use run_console()
+            if st:
+                creds = flow.run_console()
+            else:
+                creds = flow.run_console()
+        # Persiste token.json quando possível
         try:
             with open(token_path, "w", encoding="utf-8") as fp:
                 fp.write(creds.to_json())
@@ -62,11 +154,10 @@ def _authorize_google_sheets() -> Credentials:
             pass
     return creds
 
-@st.cache_resource
 def _get_sheets_service():
     return build("sheets", "v4", credentials=_authorize_google_sheets(), cache_discovery=False)
 
-# ░░░ Estrutura do formulário ░░░
+# ░░░ Estrutura do formulário (labels do formulário) ░░░
 FORM_SECTIONS: List[Tuple[str, List[Tuple[str, Any]]]] = [
     (
         "Geral",
@@ -77,8 +168,8 @@ FORM_SECTIONS: List[Tuple[str, List[Tuple[str, Any]]]] = [
             ("Local de operação:", ""),
             ("UGD:", ""),
             ("Responsável Pela Coleta:", ""),
-            ("n.º da Amostra", ""),        # obrigatório
-            (OS_LABEL, ""),                # <- NOVO: vem logo depois, para ficar na mesma linha no PDF
+            ("n.º da Amostra", ""),           # obrigatório
+            (OS_FORM_LABEL, ""),              # NOVO campo — lado a lado no PDF
         ],
     ),
     (
@@ -101,7 +192,7 @@ FORM_SECTIONS: List[Tuple[str, List[Tuple[str, Any]]]] = [
             ("Houve complemento de óleo?", False),
             ("Se sim, quantos litros?", ""),
             ("Amostra coletada:", "Motor"),
-            ("Fabricante:", "Mobil"),
+            ("Fabricante:", "Mobil"),                 # Fabricante do Óleo
             ("Grau de viscosidade:", "15W40"),
             ("Nome:", "Mobil Delvac"),
             ("Apresentou limalha no filtro ou na tela?", False),
@@ -122,9 +213,7 @@ FORM_SECTIONS: List[Tuple[str, List[Tuple[str, Any]]]] = [
     ),
 ]
 
-SHEET_COLUMNS: List[str] = [label for _, block in FORM_SECTIONS for (label, _) in block]
-
-# ░░░ UI: duas caixas (Sim/Não) para booleanos ░░░
+# ░░░ Helpers UI ░░░
 def _two_checkboxes(label: str, default: bool | None = None) -> bool:
     if st is None:
         raise RuntimeError("Streamlit não instalado – UI indisponível.")
@@ -156,55 +245,87 @@ def _two_checkboxes(label: str, default: bool | None = None) -> bool:
     return bool(st.session_state[key_yes])
 
 def build_form_and_get_responses() -> Dict[str, Any]:
+    """Desenha o formulário completo e retorna um dicionário label->valor."""
     if st is None:
         raise RuntimeError("Streamlit não instalado – UI indisponível.")
     st.header("Formulário de Coleta de Amostras de Óleo 🛢️")
     responses: Dict[str, Any] = {}
+
     for section, questions in FORM_SECTIONS:
         st.subheader(section)
+
+        # Layout especial: em "Geral", alinhar 'n.º da Amostra' e 'O.S.' lado a lado
+        if section == "Geral":
+            # desenha os 6 primeiros normalmente
+            for label, default in questions[:6]:
+                if isinstance(default, bool):
+                    responses[label] = _two_checkboxes(label, default=default)
+                else:
+                    responses[label] = st.text_input(label, value=str(default))
+
+            # agora 'n.º da Amostra' e 'O.S.' em duas colunas
+            col1, col2 = st.columns(2)
+            with col1:
+                label, default = questions[6]
+                responses[label] = st.text_input(label, value=str(default))
+            with col2:
+                label, default = questions[7]
+                responses[label] = st.text_input(label, value=str(default))
+            continue
+
+        # demais seções em lista simples
         for label, default in questions:
             if isinstance(default, bool):
                 responses[label] = _two_checkboxes(label, default=default)
             else:
                 responses[label] = st.text_input(label, value=str(default))
+
     return responses
 
 # ░░░ Persistência no Google Sheets ░░░
-def save_to_sheets(responses: Dict[str, Any]) -> None:
-    """Append da linha principal + update da coluna AH com o O.S."""
-    # prepara a linha “normal”, mas deixa o campo OS vazio nesta linha
-    row = []
-    os_value_raw = responses.get(OS_LABEL, "")
-    for col in SHEET_COLUMNS:
-        if col == OS_LABEL:
-            row.append("")  # ← deixamos vazio no append para não bagunçar o layout
-            continue
-        val = responses.get(col, "")
-        row.append("Sim" if val is True else "Não" if val is False else str(val))
+def _fmt(v: Any) -> str:
+    if v is True:
+        return "Sim"
+    if v is False:
+        return "Não"
+    return "" if v is None else str(v)
 
-    body = {"values": [row]}
+def save_to_sheets(responses: Dict[str, Any]) -> None:
+    """
+    1) Faz APPEND somente A..AG (sem OS), alinhado ao cabeçalho exato da planilha.
+    2) Em seguida faz UPDATE apenas de AH{linha} com o valor de OS do formulário.
+    """
+    # Monta a linha exatamente na ordem A..AG
+    row_out: List[str] = []
+    for hdr in SHEET_HEADERS_EXCL_OS:
+        if hdr in ("Status", "Data Status"):
+            row_out.append("")  # AF e AG ficam vazios nesta etapa
+            continue
+        form_label = SHEET_HEADER_TO_FORM.get(hdr)
+        val = responses.get(form_label, "") if form_label else ""
+        row_out.append(_fmt(val))
+
+    body = {"values": [row_out]}
+
     try:
         service = _get_sheets_service()
         append_result = service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_ID,
-            range=f"{SHEET_NAME}!A1",
+            range=f"{SHEET_NAME}!A1",           # importante: NÃO inclui AH aqui
             valueInputOption="RAW",
             insertDataOption="INSERT_ROWS",
             body=body,
         ).execute()
 
-        # pega a linha recém-escrita (ex.: "Geral!A123:AF123")
+        # Ex.: "Geral!A123:AG123" → extrai o 123
         updated_range = (append_result or {}).get("updates", {}).get("updatedRange", "")
-        m = re.search(r"!.*?(\d+):", updated_range)
-        if not m:
-            # fallback: tenta o final do range
-            m = re.search(r"!.*?(\d+)$", updated_range)
+        m = re.search(r"!.*?(\d+):", updated_range) or re.search(r"!.*?(\d+)$", updated_range)
         if not m:
             raise RuntimeError(f"Não foi possível detectar a linha inserida: {updated_range}")
         row_idx = m.group(1)
 
-        # grava APENAS o O.S. na coluna AH da linha correspondente
-        os_value = "Sim" if os_value_raw is True else "Não" if os_value_raw is False else str(os_value_raw)
+        # Atualiza AH (OS)
+        os_value = _fmt(responses.get(OS_FORM_LABEL, ""))
         service.spreadsheets().values().update(
             spreadsheetId=SPREADSHEET_ID,
             range=f"{SHEET_NAME}!{OS_TARGET_COL}{row_idx}",
@@ -217,7 +338,7 @@ def save_to_sheets(responses: Dict[str, Any]) -> None:
             st.error("❌ Erro ao gravar no Google Sheets.")
         raise RuntimeError(f"Erro ao gravar → {exc}") from exc
 
-# ░░░ Sanitização de texto ░░░
+# ░░░ PDF ░░░
 _REPL = {
     "\u2013": "-",
     "\u2014": "-",
@@ -235,11 +356,10 @@ def _safe(txt: object) -> str:
         txt = txt.replace(bad, good)
     return txt.encode("latin-1", "replace").decode("latin-1")
 
-# ░░░ PDF (1 página, 2 perguntas por linha) ░░░
 def generate_pdf(responses: Dict[str, Any]) -> bytes:
     """
-    Gera um PDF A4 (retrato). Como o campo O.S. está logo depois de 'n.º da Amostra'
-    no bloco 'Geral', os dois caem lado a lado na MESMA LINHA (duas colunas).
+    Gera um PDF A4 (retrato). O campo O.S. está logo após 'n.º da Amostra' no bloco 'Geral',
+    então os dois caem lado a lado (duas colunas) sem criar linha extra.
     """
     sample_no = str(responses.get("n.º da Amostra", "SEM_NUMERO")).strip() or "SEM_NUMERO"
 
@@ -249,7 +369,7 @@ def generate_pdf(responses: Dict[str, Any]) -> bytes:
     qr_img.save(buf_qr, format="PNG")
     buf_qr.seek(0)
 
-    # Código de barras
+    # Código de barras em memória
     buf_bar = io.BytesIO()
     barcode = Code128(sample_no, writer=ImageWriter())
     barcode.write(buf_bar, options={
@@ -269,7 +389,6 @@ def generate_pdf(responses: Dict[str, Any]) -> bytes:
     # Cabeçalho
     qr_w = 25
     bar_w = 30
-    header_h = 20
     y_start = pdf.get_y()
     x_qr  = pdf.l_margin
     x_bar = pdf.w - pdf.r_margin - bar_w
@@ -309,37 +428,30 @@ def generate_pdf(responses: Dict[str, Any]) -> bytes:
         n_rows = ceil(len(pairs) / 2)
         idx = 0
         for _ in range(n_rows):
-            for _in_group in range(2):
-                if idx < len(pairs):
-                    lab, val = pairs[idx]
-                    pdf.cell(label_w, row_h, lab, border=1)
-                    pdf.cell(value_w, row_h, val, border=1)
-                    idx += 1
-                else:
-                    pdf.cell(label_w, row_h, "", border=1)
-                    pdf.cell(value_w, row_h, "", border=1)
+            # esquerda
+            if idx < len(pairs):
+                lab, val = pairs[idx]
+                pdf.cell(label_w, row_h, lab, border=1)
+                pdf.cell(value_w, row_h, val, border=1)
+                idx += 1
+            else:
+                pdf.cell(label_w, row_h, "", border=1)
+                pdf.cell(value_w, row_h, "", border=1)
+            # direita
+            if idx < len(pairs):
+                lab, val = pairs[idx]
+                pdf.cell(label_w, row_h, lab, border=1)
+                pdf.cell(value_w, row_h, val, border=1)
+                idx += 1
+            else:
+                pdf.cell(label_w, row_h, "", border=1)
+                pdf.cell(value_w, row_h, "", border=1)
             pdf.ln(row_h)
         pdf.ln(1)
 
     raw = pdf.output(dest="S")
     return bytes(raw) if isinstance(raw, (bytes, bytearray)) else str(raw).encode("latin-1")
 
-# Execução direta (demo)
 if __name__ == "__main__":
     if st is None:
-        raise SystemExit("Execute via `streamlit run utils.py`.")
-    st.title("Coleta de Óleo – Demo Utilitário")
-    resps = build_form_and_get_responses()
-    if st.button("Salvar e Gerar PDF"):
-        if not resps.get("n.º da Amostra"):
-            st.error("Por favor, preencha o número da amostra!")
-        else:
-            save_to_sheets(resps)
-            pdf_bytes = generate_pdf(resps)
-            st.success("Dados salvos! Faça o download do PDF abaixo.")
-            st.download_button(
-                "Baixar PDF",
-                data=pdf_bytes,
-                file_name=f"amostra_{resps.get('n.º da Amostra')}.pdf",
-                mime="application/pdf",
-            )
+        raise SystemExit("Execute via `streamlit run streamlit_app.py`.")
