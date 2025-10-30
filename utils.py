@@ -29,12 +29,8 @@ except ModuleNotFoundError:
 
 # ░░░ Config Google Sheets ░░░
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-# Tenta pegar o ID da planilha dos secrets; se não houver, usa a constante abaixo.
-SPREADSHEET_ID = (
-    (st.secrets.get("SPREADSHEET_ID") if st else None)
-    or os.getenv("SPREADSHEET_ID")
-    or "YOUR_SPREADSHEET_ID_HERE"
-)
+
+SPREADSHEET_ID = "1VLDQUCO3Aw4ClAvhjkUsnBxG44BTjz-MjHK04OqPxYM"
 SHEET_NAME = "Geral"
 
 # ░░░ Rótulo e coluna de destino do novo campo O.S. ░░░
@@ -455,3 +451,4 @@ def generate_pdf(responses: Dict[str, Any]) -> bytes:
 if __name__ == "__main__":
     if st is None:
         raise SystemExit("Execute via `streamlit run streamlit_app.py`.")
+
