@@ -362,7 +362,7 @@ def _handle_sample_change() -> None:
             st.session_state["sample_row_index"] = None
             st.session_state["sample_lookup_status"] = "error"
             st.session_state["sample_lookup_message"] = f"Erro ao buscar amostra: {exc}"
-            st.experimental_rerun()
+            _trigger_rerun()
             return
 
         if fetched is None:
@@ -398,7 +398,22 @@ def _handle_sample_change() -> None:
         st.session_state["sample_existing_extras"] = {}
         st.session_state["sample_last_loaded_number"] = ""
 
-    st.experimental_rerun()
+    _trigger_rerun()
+
+
+def _trigger_rerun() -> None:
+    """Solicita um rerun compatível com versões antigas e novas do Streamlit."""
+    if st is None:
+        return
+
+    rerun = getattr(st, "experimental_rerun", None)
+    if callable(rerun):
+        rerun()
+        return
+
+    rerun_new = getattr(st, "rerun", None)
+    if callable(rerun_new):
+        rerun_new()
 
 
 # ░░░ Helpers UI ░░░
