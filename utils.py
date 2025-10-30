@@ -10,7 +10,7 @@ import re
 import json
 from math import ceil
 from datetime import datetime
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
 
 import qrcode
 from fpdf import FPDF
@@ -209,7 +209,238 @@ FORM_SECTIONS: List[Tuple[str, List[Tuple[str, Any]]]] = [
     ),
 ]
 
+BOOL_LABELS = {
+    label
+    for _, questions in FORM_SECTIONS
+    for label, default in questions
+    if isinstance(default, bool)
+}
+
+
+def _build_base_defaults() -> Dict[str, Any]:
+    defaults: Dict[str, Any] = {}
+    for _, questions in FORM_SECTIONS:
+        for label, default in questions:
+            defaults[label] = default
+    return defaults
+
+
+BASE_FORM_DEFAULTS = _build_base_defaults()
+
+# ░░░ Helpers de estado do formulário ░░░
+def _apply_form_values(values: Dict[str, Any]) -> None:
+    if st is None:
+        return
+    form_values = st.session_state.setdefault("form_values", {})
+    for label, value in values.items():
+        form_values[label] = value
+        if isinstance(value, bool):
+            key_yes = f"{label}_yes"
+            key_no = f"{label}_no"
+            st.session_state[key_yes] = bool(value)
+            st.session_state[key_no] = not bool(value)
+        else:
+            st.session_state[label] = "" if value is None else str(value)
+
+
+def sync_sample_number(sample_number: str) -> None:
+    """Atualiza o campo da amostra no estado do formulário e widgets."""
+    if st is None:
+        return
+    _apply_form_values({"n.º da Amostra": sample_number})
+
+
+def _reset_form_defaults(keep_sample: Optional[str] = None) -> None:
+    defaults = BASE_FORM_DEFAULTS.copy()
+    if keep_sample is not None:
+        defaults["n.º da Amostra"] = keep_sample
+    _apply_form_values(defaults)
+
+
+def _ensure_form_state() -> None:
+    if st is None:
+        return
+    if "form_values" not in st.session_state:
+        st.session_state["form_values"] = BASE_FORM_DEFAULTS.copy()
+        _apply_form_values(st.session_state["form_values"])
+    st.session_state.setdefault("sample_row_index", None)
+    st.session_state.setdefault("sample_lookup_status", None)
+    st.session_state.setdefault("sample_lookup_message", "")
+    st.session_state.setdefault("sample_lookup_warning", None)
+    st.session_state.setdefault("sample_existing_extras", {})
+    st.session_state.setdefault("sample_last_loaded_number", "")
+
+
+def _column_letter_to_index(col: str) -> int:
+    col = col.strip().upper()
+    if not col:
+        raise ValueError("Coluna vazia")
+    idx = 0
+    for ch in col:
+        if not ch.isalpha():
+            raise ValueError(f"Coluna inválida: {col}")
+        idx = idx * 26 + (ord(ch) - ord("A") + 1)
+    return idx - 1
+
+
+def _coerce_sheet_value(label: str, value: Any) -> Any:
+    if label in BOOL_LABELS:
+        text = "" if value is None else str(value).strip().lower()
+        if text in {"sim", "s", "true", "1", "yes"}:
+            return True
+        if text in {"não", "nao", "n", "false", "0", "no"}:
+            return False
+        base_default = BASE_FORM_DEFAULTS.get(label)
+        return bool(base_default) if isinstance(base_default, bool) else False
+    return "" if value is None else str(value)
+
+
+def _fetch_sample_from_sheets(sample_number: str) -> Optional[Tuple[int, Dict[str, Any], int, Dict[str, str]]]:
+    service = _get_sheets_service()
+    try:
+        result = (
+            service.spreadsheets()
+            .values()
+            .get(
+                spreadsheetId=SPREADSHEET_ID,
+                range=f"{SHEET_NAME}!A:AH",
+            )
+            .execute()
+        )
+    except HttpError as exc:
+        raise RuntimeError(f"Erro ao consultar planilha: {exc}") from exc
+
+    rows = result.get("values", [])
+    if not rows:
+        return None
+
+    header = rows[0]
+    header_map = {name: idx for idx, name in enumerate(header)}
+    sample_col_idx = header_map.get("n.º da Amostra")
+    if sample_col_idx is None:
+        raise RuntimeError("Cabeçalho 'n.º da Amostra' não encontrado na planilha.")
+
+    os_col_idx = header_map.get(OS_FORM_LABEL)
+    if os_col_idx is None:
+        os_col_idx = _column_letter_to_index(OS_TARGET_COL)
+
+    matches: List[Tuple[int, List[str]]] = []
+    for idx, row in enumerate(rows[1:], start=2):
+        cell_value = row[sample_col_idx] if sample_col_idx < len(row) else ""
+        if str(cell_value).strip() == sample_number:
+            matches.append((idx, row))
+
+    if not matches:
+        return None
+
+    row_idx, row_values = matches[-1]
+    form_data: Dict[str, Any] = {}
+    extras: Dict[str, str] = {}
+    for sheet_header, form_label in SHEET_HEADER_TO_FORM.items():
+        col_idx = header_map.get(sheet_header)
+        if col_idx is None:
+            continue
+        cell_value = row_values[col_idx] if col_idx < len(row_values) else ""
+        form_data[form_label] = _coerce_sheet_value(form_label, cell_value)
+
+    if os_col_idx is not None:
+        cell_value = row_values[os_col_idx] if os_col_idx < len(row_values) else ""
+        form_data[OS_FORM_LABEL] = "" if cell_value is None else str(cell_value)
+
+    for header_name in ("Status", "Data Status"):
+        idx = header_map.get(header_name)
+        if idx is not None and idx < len(row_values):
+            extras[header_name] = "" if row_values[idx] is None else str(row_values[idx])
+
+    return row_idx, form_data, len(matches), extras
+
+
+def _handle_sample_change() -> None:
+    if st is None:
+        return
+    raw_value = st.session_state.get("n.º da Amostra", "")
+    sample_value = str(raw_value).strip()
+    st.session_state["sample_lookup_warning"] = None
+
+    if sample_value:
+        try:
+            fetched = _fetch_sample_from_sheets(sample_value)
+        except Exception as exc:  # noqa: BLE001
+            st.session_state["sample_row_index"] = None
+            st.session_state["sample_lookup_status"] = "error"
+            st.session_state["sample_lookup_message"] = f"Erro ao buscar amostra: {exc}"
+            _trigger_rerun()
+            return
+
+        if fetched is None:
+            _reset_form_defaults(keep_sample=sample_value)
+            st.session_state["sample_row_index"] = None
+            st.session_state["sample_lookup_status"] = "new"
+            st.session_state["sample_lookup_message"] = (
+                f"Amostra {sample_value} não encontrada. Preencha os dados para criar um novo registro."
+            )
+            st.session_state["sample_existing_extras"] = {}
+            st.session_state["sample_last_loaded_number"] = sample_value
+        else:
+            row_idx, form_data, count, extras = fetched
+            form_data["n.º da Amostra"] = sample_value
+            _apply_form_values(form_data)
+            st.session_state["sample_row_index"] = row_idx
+            st.session_state["sample_lookup_status"] = "loaded"
+            st.session_state["sample_lookup_message"] = (
+                f"Amostra {sample_value} carregada a partir da linha {row_idx}."
+            )
+            st.session_state["sample_existing_extras"] = extras
+            st.session_state["sample_last_loaded_number"] = sample_value
+            if count > 1:
+                st.session_state["sample_lookup_warning"] = (
+                    f"Foram encontradas {count} linhas com este número. A mais recente (linha {row_idx}) foi carregada."
+                )
+    else:
+        _reset_form_defaults(keep_sample="")
+        st.session_state["sample_row_index"] = None
+        st.session_state["sample_lookup_status"] = None
+        st.session_state["sample_lookup_message"] = ""
+        st.session_state["sample_existing_extras"] = {}
+        st.session_state["sample_last_loaded_number"] = ""
+
+    _trigger_rerun()
+
+
+def _trigger_rerun() -> None:
+    """Solicita um rerun compatível com versões antigas e novas do Streamlit."""
+    if st is None:
+        return
+
+    for attr_name in ("experimental_rerun", "rerun"):
+        rerun = getattr(st, attr_name, None)
+        if callable(rerun):
+            rerun()
+            return
+
+
 # ░░░ Helpers UI ░░░
+def _render_sample_feedback() -> None:
+    if st is None:
+        return
+    message = st.session_state.get("sample_lookup_message", "")
+    status = st.session_state.get("sample_lookup_status")
+    warning = st.session_state.get("sample_lookup_warning")
+
+    if message:
+        if status == "loaded":
+            st.success(message)
+        elif status == "new":
+            st.info(message)
+        elif status == "error":
+            st.error(message)
+        else:
+            st.caption(message)
+
+    if warning:
+        st.warning(warning)
+
+
 def _two_checkboxes(label: str, default: bool | None = None) -> bool:
     if st is None:
         raise RuntimeError("Streamlit não instalado – UI indisponível.")
@@ -228,53 +459,97 @@ def _two_checkboxes(label: str, default: bool | None = None) -> bool:
             st.session_state[key_no] = False
 
     col_yes, col_no = st.columns(2)
-    def _sync_yes():
+
+    def _sync_yes() -> None:
         if st.session_state[key_yes]:
             st.session_state[key_no] = False
-    def _sync_no():
+
+    def _sync_no() -> None:
         if st.session_state[key_no]:
             st.session_state[key_yes] = False
+
     with col_yes:
         st.checkbox("Sim", key=key_yes, on_change=_sync_yes)
     with col_no:
         st.checkbox("Não", key=key_no, on_change=_sync_no)
     return bool(st.session_state[key_yes])
 
+
 def build_form_and_get_responses() -> Dict[str, Any]:
     """Desenha o formulário completo e retorna um dicionário label->valor."""
     if st is None:
         raise RuntimeError("Streamlit não instalado – UI indisponível.")
+
+    _ensure_form_state()
+    form_values = st.session_state["form_values"]
+
     st.header("Formulário de Coleta de Amostras de Óleo 🛢️")
     responses: Dict[str, Any] = {}
 
     for section, questions in FORM_SECTIONS:
         st.subheader(section)
 
-        # Layout especial: em "Geral", alinhar 'n.º da Amostra' e 'O.S.' lado a lado
         if section == "Geral":
-            # desenha os 6 primeiros normalmente
-            for label, default in questions[:6]:
-                if isinstance(default, bool):
-                    responses[label] = _two_checkboxes(label, default=default)
-                else:
-                    responses[label] = st.text_input(label, value=str(default))
+            sample_label = "n.º da Amostra"
+            col_sample, col_os = st.columns(2)
 
-            # agora 'n.º da Amostra' e 'O.S.' em duas colunas
-            col1, col2 = st.columns(2)
-            with col1:
-                label, default = questions[6]
-                responses[label] = st.text_input(label, value=str(default))
-            with col2:
-                label, default = questions[7]
-                responses[label] = st.text_input(label, value=str(default))
+            with col_sample:
+                sample_default = form_values.get(sample_label, "")
+                sample_value = st.text_input(
+                    sample_label,
+                    value="" if sample_default is None else str(sample_default),
+                    key=sample_label,
+                    on_change=_handle_sample_change,
+                )
+                sample_value = st.session_state.get(sample_label, sample_value)
+            responses[sample_label] = sample_value
+            form_values[sample_label] = sample_value
+
+            with col_os:
+                os_default = form_values.get(OS_FORM_LABEL, "")
+                os_value = st.text_input(
+                    OS_FORM_LABEL,
+                    value="" if os_default is None else str(os_default),
+                )
+            responses[OS_FORM_LABEL] = os_value
+            form_values[OS_FORM_LABEL] = os_value
+
+            _render_sample_feedback()
+
+            for label, default in questions:
+                if label in {sample_label, OS_FORM_LABEL}:
+                    continue
+                effective_default = form_values.get(label, default)
+                if isinstance(default, bool):
+                    if isinstance(effective_default, bool):
+                        default_bool = effective_default
+                    else:
+                        default_bool = default
+                    value = _two_checkboxes(label, default=default_bool)
+                else:
+                    value = st.text_input(
+                        label,
+                        value="" if effective_default is None else str(effective_default),
+                    )
+                responses[label] = value
+                form_values[label] = value
             continue
 
-        # demais seções em lista simples
         for label, default in questions:
+            effective_default = form_values.get(label, default)
             if isinstance(default, bool):
-                responses[label] = _two_checkboxes(label, default=default)
+                if isinstance(effective_default, bool):
+                    default_bool = effective_default
+                else:
+                    default_bool = default
+                value = _two_checkboxes(label, default=default_bool)
             else:
-                responses[label] = st.text_input(label, value=str(default))
+                value = st.text_input(
+                    label,
+                    value="" if effective_default is None else str(effective_default),
+                )
+            responses[label] = value
+            form_values[label] = value
 
     return responses
 
@@ -286,48 +561,71 @@ def _fmt(v: Any) -> str:
         return "Não"
     return "" if v is None else str(v)
 
-def save_to_sheets(responses: Dict[str, Any]) -> None:
+def save_to_sheets(
+    responses: Dict[str, Any],
+    existing_row: Optional[int] = None,
+    existing_extras: Optional[Dict[str, str]] = None,
+) -> int:
     """
-    1) Faz APPEND somente A..AG (sem OS), alinhado ao cabeçalho exato da planilha.
-    2) Em seguida faz UPDATE apenas de AH{linha} com o valor de OS do formulário.
+    Persiste os dados no Google Sheets.
+
+    * Quando ``existing_row`` é ``None``: faz APPEND de A..AG e atualiza AH com a O.S.
+    * Quando ``existing_row`` é informado: atualiza A..AH na linha indicada, preservando
+      colunas não presentes no formulário (Status/Data Status) através de ``existing_extras``.
+    Retorna o índice (1-based) da linha gravada/atualizada.
     """
-    # Monta a linha exatamente na ordem A..AG
+
+    extras = existing_extras or {}
+
     row_out: List[str] = []
     for hdr in SHEET_HEADERS_EXCL_OS:
         if hdr in ("Status", "Data Status"):
-            row_out.append("")  # AF e AG ficam vazios nesta etapa
+            row_out.append(extras.get(hdr, ""))
             continue
         form_label = SHEET_HEADER_TO_FORM.get(hdr)
         val = responses.get(form_label, "") if form_label else ""
         row_out.append(_fmt(val))
 
-    body = {"values": [row_out]}
+    os_value = _fmt(responses.get(OS_FORM_LABEL, ""))
 
     try:
         service = _get_sheets_service()
+
+        if existing_row is not None:
+            row_idx_int = int(existing_row)
+            row_full = list(row_out)
+            row_full.append(os_value)
+            service.spreadsheets().values().update(
+                spreadsheetId=SPREADSHEET_ID,
+                range=f"{SHEET_NAME}!A{row_idx_int}:AH{row_idx_int}",
+                valueInputOption="RAW",
+                body={"values": [row_full]},
+            ).execute()
+            return row_idx_int
+
+        body = {"values": [row_out]}
         append_result = service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_ID,
-            range=f"{SHEET_NAME}!A1",           # importante: NÃO inclui AH aqui
+            range=f"{SHEET_NAME}!A1",
             valueInputOption="RAW",
             insertDataOption="INSERT_ROWS",
             body=body,
         ).execute()
 
-        # Ex.: "Geral!A123:AG123" → extrai o 123
         updated_range = (append_result or {}).get("updates", {}).get("updatedRange", "")
         m = re.search(r"!.*?(\d+):", updated_range) or re.search(r"!.*?(\d+)$", updated_range)
         if not m:
             raise RuntimeError(f"Não foi possível detectar a linha inserida: {updated_range}")
-        row_idx = m.group(1)
+        row_idx_int = int(m.group(1))
 
-        # Atualiza AH (OS)
-        os_value = _fmt(responses.get(OS_FORM_LABEL, ""))
         service.spreadsheets().values().update(
             spreadsheetId=SPREADSHEET_ID,
-            range=f"{SHEET_NAME}!{OS_TARGET_COL}{row_idx}",
+            range=f"{SHEET_NAME}!{OS_TARGET_COL}{row_idx_int}",
             valueInputOption="RAW",
             body={"values": [[os_value]]},
         ).execute()
+
+        return row_idx_int
 
     except HttpError as exc:
         if st:
