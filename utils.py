@@ -243,23 +243,33 @@ def _apply_form_values(values: Dict[str, Any]) -> None:
             st.session_state[label] = "" if value is None else str(value)
 
 
-def sync_sample_number(sample_number: str) -> None:
-    """Atualiza o campo da amostra no estado do formulário e widgets."""
+def _queue_form_updates(values: Dict[str, Any]) -> None:
+    """Armazena atualizações para aplicação segura após o próximo rerun."""
     if st is None:
         return
 
     form_values = st.session_state.setdefault("form_values", BASE_FORM_DEFAULTS.copy())
-    form_values["n.º da Amostra"] = sample_number
+    form_values.update(values)
 
     pending = st.session_state.setdefault("_pending_form_values", {})
-    pending["n.º da Amostra"] = sample_number
+    pending.update(values)
+
+
+def sync_sample_number(sample_number: str) -> None:
+    """Atualiza o campo da amostra no estado do formulário e widgets."""
+    if st is None:
+        return
+    _queue_form_updates({"n.º da Amostra": sample_number})
 
 
 def _reset_form_defaults(keep_sample: Optional[str] = None) -> None:
     defaults = BASE_FORM_DEFAULTS.copy()
     if keep_sample is not None:
         defaults["n.º da Amostra"] = keep_sample
-    _apply_form_values(defaults)
+    if st is None:
+        return
+    st.session_state["form_values"] = defaults
+    _queue_form_updates(defaults)
 
 
 def _ensure_form_state() -> None:
@@ -393,7 +403,7 @@ def _handle_sample_change() -> None:
         else:
             row_idx, form_data, count, extras = fetched
             form_data["n.º da Amostra"] = sample_value
-            _apply_form_values(form_data)
+            _queue_form_updates(form_data)
             st.session_state["sample_row_index"] = row_idx
             st.session_state["sample_lookup_status"] = "loaded"
             st.session_state["sample_lookup_message"] = (
