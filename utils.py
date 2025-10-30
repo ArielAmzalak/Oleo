@@ -243,6 +243,13 @@ def _apply_form_values(values: Dict[str, Any]) -> None:
             st.session_state[label] = "" if value is None else str(value)
 
 
+def sync_sample_number(sample_number: str) -> None:
+    """Atualiza o campo da amostra no estado do formulário e widgets."""
+    if st is None:
+        return
+    _apply_form_values({"n.º da Amostra": sample_number})
+
+
 def _reset_form_defaults(keep_sample: Optional[str] = None) -> None:
     defaults = BASE_FORM_DEFAULTS.copy()
     if keep_sample is not None:
@@ -378,7 +385,6 @@ def _handle_sample_change() -> None:
             row_idx, form_data, count, extras = fetched
             form_data["n.º da Amostra"] = sample_value
             _apply_form_values(form_data)
-            st.session_state["n.º da Amostra"] = sample_value
             st.session_state["sample_row_index"] = row_idx
             st.session_state["sample_lookup_status"] = "loaded"
             st.session_state["sample_lookup_message"] = (
@@ -406,14 +412,11 @@ def _trigger_rerun() -> None:
     if st is None:
         return
 
-    rerun = getattr(st, "experimental_rerun", None)
-    if callable(rerun):
-        rerun()
-        return
-
-    rerun_new = getattr(st, "rerun", None)
-    if callable(rerun_new):
-        rerun_new()
+    for attr_name in ("experimental_rerun", "rerun"):
+        rerun = getattr(st, attr_name, None)
+        if callable(rerun):
+            rerun()
+            return
 
 
 # ░░░ Helpers UI ░░░

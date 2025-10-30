@@ -5,7 +5,12 @@
 from typing import Dict
 
 import streamlit as st
-from utils import build_form_and_get_responses, save_to_sheets, generate_pdf
+from utils import (
+    build_form_and_get_responses,
+    save_to_sheets,
+    generate_pdf,
+    sync_sample_number,
+)
 
 st.set_page_config(
     page_title="Registro de Coleta de Óleo",
@@ -25,9 +30,7 @@ if st.button("✅ Enviar & Gerar PDF"):
         st.error("⚠️ Preencha o campo *n.º da Amostra* (obrigatório).")
     else:
         responses["n.º da Amostra"] = sample_no
-        st.session_state["n.º da Amostra"] = sample_no
-        if "form_values" in st.session_state:
-            st.session_state["form_values"]["n.º da Amostra"] = sample_no
+        sync_sample_number(sample_no)
 
         last_loaded = st.session_state.get("sample_last_loaded_number", "") or ""
         existing_row = st.session_state.get("sample_row_index")
